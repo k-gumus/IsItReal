@@ -59,3 +59,40 @@ export class TtlCache<V> {
     }
   }
 }
+
+/**
+ * Sunucu genelinde günlük doğrulama sınırı: site herkese açıkken API kredilerini korur.
+ * Gün, verilen saat dilimine göre (varsayılan İstanbul) gece yarısında sıfırlanır. limit <= 0 ise sınırsız.
+ */
+export class DailyCounter {
+  private day = '';
+  private count = 0;
+
+  constructor(
+    private readonly limit: number,
+    private readonly timeZone = 'Europe/Istanbul',
+    private readonly now: () => Date = () => new Date()
+  ) {}
+
+  private today(): string {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: this.timeZone }).format(this.now());
+  }
+
+  /** Bir hak kullanır; sınır dolduysa false döner. */
+  take(): boolean {
+    if (this.limit <= 0) return true;
+    const day = this.today();
+    if (day !== this.day) {
+      this.day = day;
+      this.count = 0;
+    }
+    if (this.count >= this.limit) return false;
+    this.count++;
+    return true;
+  }
+
+  remaining(): number | null {
+    if (this.limit <= 0) return null;
+    return this.today() === this.day ? Math.max(0, this.limit - this.count) : this.limit;
+  }
+}

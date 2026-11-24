@@ -61,6 +61,23 @@ npm run verify -- "Doğrulanacak metin"   # komut satırından tek seferlik
 npm run verify -- --json "Metin"         # ham JSON rapor
 ```
 
+## Yayına alma (isitreal.sezgidetectionsystems.com)
+
+Repo, [Render](https://render.com) için hazır bir `render.yaml` içeriyor (Node 22, ücretsiz plan, Frankfurt).
+
+1. Render'a GitHub hesabınla gir, **New > Blueprint** seçip `k-gumus/IsItReal` reposunu bağla.
+2. Kurulum `TAVILY_API_KEY`, `GEMINI_API_KEY` (ve isteğe bağlı diğerlerini) soracak. Boş bırakırsan site demo modunda açılır.
+3. Alan adının DNS panelinde şu kaydı ekle:
+
+   | Tür | Ad | Değer |
+   | --- | --- | --- |
+   | CNAME | `isitreal` | Render'ın verdiği `isitreal-xxxx.onrender.com` adresi |
+
+   DNS Cloudflare'deyse kaydı **DNS only** (gri bulut) olarak ekle; Render SSL sertifikasını kendisi alır.
+4. Render panelinde **Settings > Custom Domains** altında alan adı "Verified" olunca site `https://isitreal.sezgidetectionsystems.com` adresinde açılır. `main`'e her push otomatik yayına alınır.
+
+Ücretsiz planda servis 15 dakika boş kalınca uyur; ilk istek yaklaşık bir dakika sürebilir. Site herkese açık olduğu için `DAILY_LIMIT` (varsayılan 100) ve IP başına dakikada 8 istek sınırı API kredilerini korur; aynı metin 10 dakika içinde tekrar sorulursa önbellekten gelir ve sayılmaz.
+
 ## Komutlar
 
 | Komut | Ne yapar |
@@ -69,7 +86,7 @@ npm run verify -- --json "Metin"         # ham JSON rapor
 | `npm run demo` | Anahtarlar olsa bile demo modunda başlatır |
 | `npm run dev` | Dosya değiştikçe yeniden başlatır |
 | `npm run verify` | Komut satırı doğrulaması |
-| `npm test` | 100 birim ve entegrasyon testi |
+| `npm test` | 103 birim ve entegrasyon testi |
 | `npm run typecheck` | Katı (strict) TypeScript denetimi |
 | `npm run build` ve `npm run start:prod` | `dist/` derleyip derlenmiş sürümü çalıştırır |
 

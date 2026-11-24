@@ -10,7 +10,7 @@ import { tierReference } from '../core/authority.js';
 import { classifyInput } from '../core/input.js';
 import { INPUT_LIMITS, InputError, validateInput } from '../core/pipeline.js';
 import type { ProgressEvent } from '../core/types.js';
-import { RateLimiter, TtlCache } from './limits.js';
+import { DailyCounter, RateLimiter, TtlCache } from './limits.js';
 
 export interface ServerOptions {
   deps: EngineDeps;
@@ -19,6 +19,8 @@ export interface ServerOptions {
   rateLimitPerMinute?: number;
   maxConcurrent?: number;
   cacheTtlMs?: number;
+  /** Sunucu genelinde günlük en fazla (önbellek dışı) doğrulama; 0 = sınırsız */
+  dailyLimit?: number;
   log?: (msg: string) => void;
 }
 
@@ -83,9 +85,13 @@ async function readRawBody(req: http.IncomingMessage, limit: number): Promise<Bu
 
 function clientIp(req: http.IncomingMessage, trustProxy: boolean): string {
   if (trustProxy) {
+    // Cloudflare arkasındaki platformlar (ör. Render) gerçek istemci IP'sini bu başlıkta verir
+    const cf = req.headers['cf-connecting-ip'];
+    if (typeof cf === 'string' && cf.trim()) return cf.trim();
+    // X-Forwarded-For'un en sağdaki değeri güvenilen vekilin eklediğidir; soldakiler istemcice uydurulabilir
     const fwd = req.headers['x-forwarded-for'];
-    const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0]?.trim();
-    if (first) return first;
+    const last = (Array.isArray(fwd) ? fwd.join(',') : fwd)?.split(',').map((s) => s.trim()).filter(Boolean).at(-1);
+    if (last) return last;
   }
   return req.socket.remoteAddress ?? 'unknown';
 }
@@ -103,6 +109,9 @@ export function createServer(options: ServerOptions): http.Server {
   // Yüklenen PDF'lerin çıkarılmış metni: dosyanın kendisi saklanmaz, 30 dakika sonra silinir
   const pdfStore = new TtlCache<PdfInput>(30 * 60_000, 50);
   const maxConcurrent = options.maxConcurrent ?? 4;
+  const daily = new DailyCounter(options.dailyLimit ?? 0);
+  const dailyExhausted = (res: http.ServerResponse) =>
+    send(res, 429, { error: 'Bugünkü ücretsiz doğrulama hakkı doldu. Yarın tekrar dene ya da uygulamayı kendi bilgisayarında çalıştır.' }, { 'Retry-After': '3600' });
   const trustProxy = process.env.TRUST_PROXY === '1';
   let active = 0;
 
@@ -165,6 +174,7 @@ export function createServer(options: ServerOptions): http.Server {
     const cached = cache.get(prepared.key);
     if (cached) return send(res, 200, { ...cached, cached: true });
     if (active >= maxConcurrent) return send(res, 503, { error: 'Sunucu şu an meşgul, birkaç saniye sonra tekrar deneyin.' }, { 'Retry-After': '5' });
+    if (!daily.take()) return dailyExhausted(res);
 
     active++;
     try {
@@ -187,6 +197,7 @@ export function createServer(options: ServerOptions): http.Server {
     if (!cached && active >= maxConcurrent) {
       return send(res, 503, { error: 'Sunucu şu an meşgul, birkaç saniye sonra tekrar deneyin.' }, { 'Retry-After': '5' });
     }
+    if (!cached && !daily.take()) return dailyExhausted(res);
 
     res.writeHead(200, {
       ...SECURITY_HEADERS,
@@ -256,7 +267,7 @@ export function createServer(options: ServerOptions): http.Server {
     const url = new URL(req.url ?? '/', 'http://localhost');
     try {
       if (url.pathname === '/api/health' && req.method === 'GET') {
-        return send(res, 200, { ok: true, mode: deps.mode, limits: INPUT_LIMITS });
+        return send(res, 200, { ok: true, mode: deps.mode, limits: INPUT_LIMITS, dailyRemaining: daily.remaining() });
       }
       if (url.pathname === '/api/tiers' && req.method === 'GET') return send(res, 200, tierReference());
       if (url.pathname === '/api/pdf' && req.method === 'POST') return await handlePdf(req, res);

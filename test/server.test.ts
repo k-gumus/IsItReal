@@ -8,7 +8,7 @@ import { DemoLLMProvider, DemoPageExtractor, DemoSearchProvider } from '../src/a
 import { DemoDoiResolver } from '../src/adapters/doi.js';
 import { makePdf } from './helpers.js';
 import { createServer } from '../src/server/server.js';
-import { RateLimiter, TtlCache } from '../src/server/limits.js';
+import { DailyCounter, RateLimiter, TtlCache } from '../src/server/limits.js';
 
 let base = '';
 let close: () => Promise<void>;
@@ -136,5 +136,46 @@ describe('limitler', () => {
     assert.equal(c.get('a'), 1);
     t = 200;
     assert.equal(c.get('a'), undefined);
+  });
+});
+
+describe('günlük sınır', () => {
+  it('DailyCounter sınır dolunca reddeder ve İstanbul saatine göre gece yarısı sıfırlanır', () => {
+    let now = new Date('2026-11-24T20:00:00Z'); // İstanbul 23:00
+    const c = new DailyCounter(2, 'Europe/Istanbul', () => now);
+    assert.ok(c.take());
+    assert.ok(c.take());
+    assert.ok(!c.take());
+    assert.equal(c.remaining(), 0);
+    now = new Date('2026-11-24T21:30:00Z'); // İstanbul 00:30, yeni gün
+    assert.equal(c.remaining(), 2);
+    assert.ok(c.take());
+  });
+
+  it('sınır 0 ise sınırsızdır', () => {
+    const c = new DailyCounter(0);
+    for (let i = 0; i < 100; i++) assert.ok(c.take());
+    assert.equal(c.remaining(), null);
+  });
+
+  it('sunucu günlük sınır dolunca 429 döner ama önbellekteki raporu yine verir', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'isitreal-daily-'));
+    const server = createServer({
+      deps: { mode: 'demo', searchProvider: new DemoSearchProvider(0), llm: new DemoLLMProvider(0), pageExtractor: new DemoPageExtractor(0), doiResolver: new DemoDoiResolver(), tracerConfig: { maxDepth: 2 } },
+      publicDir: dir,
+      dailyLimit: 1,
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/verify`;
+    const ask = (text: string) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    try {
+      assert.equal((await ask('Ekim ayında yıllık enflasyon yüzde 31,2 olarak açıklandı.')).status, 200);
+      const blocked = await ask('Şehrin altında gizli bir tünel ağı bulunuyor.');
+      assert.equal(blocked.status, 429);
+      assert.match((await blocked.json()).error, /doğrulama hakkı doldu/);
+      assert.equal((await ask('Ekim ayında yıllık enflasyon yüzde 31,2 olarak açıklandı.')).status, 200);
+    } finally {
+      await new Promise((r) => server.close(() => r(undefined)));
+    }
   });
 });

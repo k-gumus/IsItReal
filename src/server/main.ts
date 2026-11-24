@@ -17,6 +17,7 @@ const server = createServer({
   deps,
   publicDir,
   rateLimitPerMinute: Number.parseInt(process.env.RATE_LIMIT_PER_MINUTE ?? '8', 10),
+  dailyLimit: Number.parseInt(process.env.DAILY_LIMIT ?? '0', 10) || 0,
   log: (msg) => console.error(`[isitreal] ${msg}`),
 });
 
