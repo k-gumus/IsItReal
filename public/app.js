@@ -175,7 +175,7 @@ for (const b of document.querySelectorAll('[data-example]')) {
 omnibox.addEventListener('submit', (e) => {
   e.preventDefault();
   closeOmni();
-  if (state.pdf) return run({ pdfId: state.pdf.id }, state.pdf.name);
+  if (state.pdf) return run({ pdf: { name: state.pdf.name, pages: state.pdf.pages, text: state.pdf.text, title: state.pdf.title } }, state.pdf.name);
   const text = q.value.trim();
   if (!text) return q.focus();
   if (detectKind(text) === 'text' && text.length < 10) return showBanner('Doğrulamak için en az 10 karakterlik bir metin, bir bağlantı ya da DOI gir.');
@@ -205,9 +205,46 @@ function clearPdf() {
   updateKind();
 }
 
+// PDF tarayıcıda okunur (pdf.js); sunucuya dosya değil, yalnızca çıkarılan metin gider.
+const MAX_PDF_PAGES = 80;
+const MAX_PDF_CHARS = 300_000;
+let pdfjsPromise = null;
+function loadPdfJs() {
+  pdfjsPromise ??= import('/vendor/pdfjs/pdf.min.mjs').then((pdfjs) => {
+    pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.mjs';
+    return pdfjs;
+  });
+  return pdfjsPromise;
+}
+
+async function extractPdfText(file) {
+  const pdfjs = await loadPdfJs();
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false, disableFontFace: true }).promise;
+  try {
+    if (doc.numPages > MAX_PDF_PAGES) throw new Error(`PDF en fazla ${MAX_PDF_PAGES} sayfa olabilir (bu dosya ${doc.numPages} sayfa).`);
+    let text = '';
+    for (let p = 1; p <= doc.numPages && text.length < MAX_PDF_CHARS; p++) {
+      const page = await doc.getPage(p);
+      const content = await page.getTextContent();
+      text += content.items.map((it) => (it.str ?? '') + (it.hasEOL ? '\n' : ' ')).join('') + '\n';
+      $('pdf-chip-text').textContent = `${file.name} okunuyor, ${p}/${doc.numPages} sayfa…`;
+    }
+    let title;
+    try {
+      const meta = await doc.getMetadata();
+      title = typeof meta?.info?.Title === 'string' ? meta.info.Title : undefined;
+    } catch { /* üst veri isteğe bağlı */ }
+    return { name: file.name, pages: doc.numPages, text: text.slice(0, MAX_PDF_CHARS), title };
+  } finally {
+    doc.destroy();
+  }
+}
+
+const DOI_ANY = /10\.\d{4,9}\/[^\s"'<>]+/gi;
+
 async function uploadPdf(file) {
   if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) return showBanner('Yalnızca PDF dosyası yüklenebilir.');
-  if (file.size > 15 * 1024 * 1024) return showBanner('PDF en fazla 15 MB olabilir.');
+  if (file.size > 25 * 1024 * 1024) return showBanner('PDF en fazla 25 MB olabilir.');
   switchTab('verify');
   closeOmni();
   showBanner('');
@@ -217,19 +254,15 @@ async function uploadPdf(file) {
   $('pdf-chip').hidden = false;
   $('pdf-chip-text').textContent = `${file.name} okunuyor…`;
   try {
-    const res = await fetch('/api/pdf', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/pdf', 'X-Filename': encodeURIComponent(file.name) },
-      body: file,
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.error ?? `Sunucu ${res.status} döndürdü.`);
-    state.pdf = body;
-    $('pdf-chip-text').textContent = `${body.name}, ${body.pages} sayfa, ${body.dois} DOI`;
-    run({ pdfId: body.id }, body.name);
+    const pdf = await extractPdfText(file);
+    if (!pdf.text.trim()) throw new Error('Bu PDF\'te seçilebilir metin yok (taranmış bir belge olabilir).');
+    const dois = new Set((pdf.text.match(DOI_ANY) ?? []).map((d) => d.toLowerCase().replace(/[.,;:)\]]+$/, ''))).size;
+    state.pdf = { ...pdf, dois };
+    $('pdf-chip-text').textContent = `${pdf.name}, ${pdf.pages} sayfa, ${dois} DOI`;
+    run({ pdf }, pdf.name);
   } catch (err) {
     clearPdf();
-    showBanner(err instanceof TypeError ? 'Sunucuya ulaşılamadı.' : err.message);
+    showBanner(err?.name === 'PasswordException' ? 'Bu PDF şifreli; şifresiz bir kopyasını dene.' : err?.message ?? 'PDF okunamadı.');
   }
 }
 
@@ -694,7 +727,7 @@ async function readEventStream(response, onEvent) {
 }
 
 function liveSource(body, label) {
-  if (body.pdfId) return { kind: 'pdf', label, pages: state.pdf?.pages };
+  if (body.pdf) return { kind: 'pdf', label, pages: body.pdf.pages };
   const kind = detectKind(body.text);
   if (kind === 'url') {
     try {

@@ -1,0 +1,22 @@
+{
+  // Cloudflare Workers yapılandırması: arayüz public/ klasöründen statik dosya olarak,
+  // /api/* istekleri src/worker.ts tarafından yanıtlanır.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "isitreal",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "routes": [{ "pattern": "isitreal.eeesim.fyi", "custom_domain": true }],
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  // Gizli olmayan ayarlar. API anahtarlarını panelden "Secret" olarak ekle:
+  //   TAVILY_API_KEY, GEMINI_API_KEY (yoksa site demo modunda çalışır)
+  "vars": {
+    "DAILY_LIMIT": "100",
+    "RATE_LIMIT_PER_MINUTE": "8",
+    "TAVILY_SEARCH_DEPTH": "basic"
+  }
+}

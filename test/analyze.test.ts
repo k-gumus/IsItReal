@@ -2,10 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { DemoLLMProvider, DemoPageExtractor, DemoSearchProvider } from '../src/adapters/demo.js';
 import { DemoDoiResolver } from '../src/adapters/doi.js';
-import { extractPdf } from '../src/adapters/pdf.js';
 import { analyze, citationPenalty } from '../src/core/analyze.js';
 import { InputError } from '../src/core/pipeline.js';
-import { makePdf } from './helpers.js';
 
 const deps = () => ({
   searchProvider: new DemoSearchProvider(0),
@@ -57,15 +55,16 @@ describe('analyze', () => {
   });
 
   it('PDF\'in özetini doğrular ve içindeki tüm DOI\'leri denetler', async () => {
-    const bytes = await makePdf([
+    // Tarayıcıda pdf.js ile çıkarılmış metnin biçimi: satırlar \n ile ayrılır
+    const text = [
+      'Kentsel isi adalari ve enerji tuketimi',
       'Abstract. Ekim ayinda yillik enflasyon yuzde 31,2 olarak aciklandi ve bulten yayimlandi.',
       'References',
       '[1] doi:10.5555/demo.2024.001',
       '[2] https://doi.org/10.5555/demo.2019.042',
       '[3] 10.5555/demo.olmayan',
-    ]);
-    const pdf = await extractPdf(bytes);
-    const r = await analyze({ pdf: { name: 'makale.pdf', ...pdf } }, deps());
+    ].join('\n');
+    const r = await analyze({ pdf: { name: 'makale.pdf', pages: 1, text, dois: [] } }, deps());
     assert.equal(r.source.kind, 'pdf');
     assert.equal(r.source.pages, 1);
     assert.deepEqual(

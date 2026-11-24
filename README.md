@@ -22,7 +22,7 @@ Bilgi kirliliğine karşı, arama motoru gibi çalışan bir doğrulama aracı. 
 | Metin | İddialara ayrılır, her biri web'de izlenir; metindeki DOI'ler ayrıca denetlenir |
 | Bağlantı | Sayfanın metni Tavily Extract ile alınır, sitenin kendi kaynak katmanı gösterilir |
 | DOI (`10.xxxx/...`, `doi:...`, `doi.org/...`) | Yayın kaydı, yazarlar, dergi, yıl, atıf sayısı, geri çekme ve düzeltme bildirimleri |
-| PDF (en fazla 15 MB, 80 sayfa) | Özet bölümü doğrulanır, kaynakça ayıklanır, içindeki tüm DOI'ler (en fazla 25) denetlenir |
+| PDF (en fazla 25 MB, 80 sayfa) | Tarayıcında okunur (dosya sunucuya gitmez); özet bölümü doğrulanır, kaynakça ayıklanır, içindeki tüm DOI'ler (en fazla 25) denetlenir |
 
 DOI denetimi anahtar gerektirmeyen açık servislerle yapılır: önce Crossref (geri çekme bilgisi Retraction Watch verisi dahil `updated-by` alanından), orada yoksa doi.org handle API'si (DOI hiç kayıtlı mı?), kayıtlıysa DataCite. Bu yüzden demo modunda bile gerçek DOI'ler gerçekten sorgulanır; yalnızca `10.5555/demo.*` önekli kurgusal DOI'ler demo kayıtlardan yanıtlanır.
 
@@ -61,22 +61,20 @@ npm run verify -- "Doğrulanacak metin"   # komut satırından tek seferlik
 npm run verify -- --json "Metin"         # ham JSON rapor
 ```
 
-## Yayına alma (isitreal.sezgidetectionsystems.com)
+## Yayına alma (Cloudflare Workers, ücretsiz)
 
-Repo, [Render](https://render.com) için hazır bir `render.yaml` içeriyor (Node 22, ücretsiz plan, Frankfurt).
+Site `https://isitreal.eeesim.fyi` adresinde Cloudflare Workers'ın ücretsiz planında çalışır; kart gerekmez. Arayüz `public/` klasöründen statik dosya olarak sunulur, `/api/*` istekleri `src/worker.ts` tarafından yanıtlanır. Node sunucusuyla aynı API kodunu (`src/http/api.ts`) kullanır.
 
-1. Render'a GitHub hesabınla gir, **New > Blueprint** seçip `k-gumus/IsItReal` reposunu bağla.
-2. Kurulum `TAVILY_API_KEY`, `GEMINI_API_KEY` (ve isteğe bağlı diğerlerini) soracak. Boş bırakırsan site demo modunda açılır.
-3. Alan adının DNS panelinde şu kaydı ekle:
+1. Cloudflare panelinde **Workers & Pages > Create > Import a repository** ile `k-gumus/IsItReal` reposunu bağla. Dağıtım komutu `npx wrangler deploy` (varsayılan).
+2. `wrangler.jsonc` içindeki `routes` ayarı, ilk dağıtımda `isitreal.eeesim.fyi` alan adını ve DNS kaydını kendiliğinden oluşturur.
+3. Worker'ın **Settings > Variables and Secrets** bölümüne `TAVILY_API_KEY` ve `GEMINI_API_KEY` değerlerini **Secret** olarak ekle. Eklemezsen site demo modunda çalışır.
+4. Bundan sonra `main`'e yapılan her push kendiliğinden yayına alınır.
 
-   | Tür | Ad | Değer |
-   | --- | --- | --- |
-   | CNAME | `isitreal` | Render'ın verdiği `isitreal-xxxx.onrender.com` adresi |
+PDF'ler sunucuya yüklenmez: metin tarayıcıda pdf.js ile çıkarılır ve sunucuya yalnızca metin gider. Böylece Workers'ın istek başına kısa işlem süresi sınırına takılmaz, belgen de sunucuya hiç gelmez.
 
-   DNS Cloudflare'deyse kaydı **DNS only** (gri bulut) olarak ekle; Render SSL sertifikasını kendisi alır.
-4. Render panelinde **Settings > Custom Domains** altında alan adı "Verified" olunca site `https://isitreal.sezgidetectionsystems.com` adresinde açılır. `main`'e her push otomatik yayına alınır.
+Hız ve günlük sınır (`RATE_LIMIT_PER_MINUTE`, `DAILY_LIMIT`) bellek içi tutulur ve her Worker örneği için ayrıdır; kaba bir korumadır. Asıl tavan Tavily ve Gemini'nin ücretsiz kotalarıdır: kota dolarsa ücret çıkmaz, doğrulamalar hata verir.
 
-Ücretsiz planda servis 15 dakika boş kalınca uyur; ilk istek yaklaşık bir dakika sürebilir. Site herkese açık olduğu için `DAILY_LIMIT` (varsayılan 100) ve IP başına dakikada 8 istek sınırı API kredilerini korur; aynı metin 10 dakika içinde tekrar sorulursa önbellekten gelir ve sayılmaz.
+Yerelde Workers ortamını denemek için: `npm run dev:worker`.
 
 ## Komutlar
 
@@ -86,7 +84,9 @@ Repo, [Render](https://render.com) için hazır bir `render.yaml` içeriyor (Nod
 | `npm run demo` | Anahtarlar olsa bile demo modunda başlatır |
 | `npm run dev` | Dosya değiştikçe yeniden başlatır |
 | `npm run verify` | Komut satırı doğrulaması |
-| `npm test` | 103 birim ve entegrasyon testi |
+| `npm test` | 107 birim ve entegrasyon testi |
+| `npm run dev:worker` | Cloudflare Workers ortamını yerelde çalıştırır |
+| `npm run deploy` | Wrangler ile Cloudflare'e dağıtır (giriş gerekir) |
 | `npm run typecheck` | Katı (strict) TypeScript denetimi |
 | `npm run build` ve `npm run start:prod` | `dist/` derleyip derlenmiş sürümü çalıştırır |
 
@@ -153,10 +153,12 @@ src/
     validation.ts       güvenilmez LLM çıktısını tipe zorlama
     sanitize.ts         web metnini isteme koymadan önce temizleme
   adapters/             dış servisler: Tavily (arama + extract), Gemini, Google Fact Check,
-                        Crossref / doi.org / DataCite (doi.ts), PDF metni (pdf.ts), demo
-  server/               HTTP sunucusu, hız sınırı, önbellek
+                        Crossref / doi.org / DataCite (doi.ts), demo
+  http/api.ts           ortamdan bağımsız API (Request/Response): Node ve Workers ortak kullanır
+  server/               Node HTTP sunucusu (yerel kullanım), hız sınırı, önbellek
+  worker.ts             Cloudflare Workers girişi
   index.ts              komut satırı
-public/                 arayüz (HTML, CSS, JS; derleme adımı ve dış yazı tipi yok)
+public/                 arayüz (HTML, CSS, JS; derleme adımı yok), vendor/pdfjs (Apache-2.0)
 test/                   birim ve entegrasyon testleri
 ```
 

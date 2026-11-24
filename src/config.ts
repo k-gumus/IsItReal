@@ -13,7 +13,7 @@ export type EngineDeps = Omit<AnalyzeDeps, 'onProgress'> & { mode: 'live' | 'dem
  * DOI denetimi anahtar gerektirmeyen açık servislerle (Crossref, doi.org, DataCite) her iki modda da gerçektir;
  * yalnızca 10.5555/demo.* önekli kurgusal DOI'ler demo kayıtlardan yanıtlanır.
  */
-export function createEngineDeps(env: NodeJS.ProcessEnv = process.env, forceDemo = false): EngineDeps {
+export function createEngineDeps(env: Record<string, string | undefined> = process.env, forceDemo = false): EngineDeps {
   const maxDepth = Number.parseInt(env.MAX_DEPTH ?? '2', 10);
   const tracerConfig = { maxDepth: Number.isFinite(maxDepth) ? maxDepth : 2, languageCode: env.LANGUAGE_CODE ?? 'tr' };
   const doiResolver = new RoutingDoiResolver(new OpenDoiResolver(env.CROSSREF_MAILTO?.trim() || undefined));

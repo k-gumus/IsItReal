@@ -6,7 +6,6 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { DemoLLMProvider, DemoPageExtractor, DemoSearchProvider } from '../src/adapters/demo.js';
 import { DemoDoiResolver } from '../src/adapters/doi.js';
-import { makePdf } from './helpers.js';
 import { createServer } from '../src/server/server.js';
 import { DailyCounter, RateLimiter, TtlCache } from '../src/server/limits.js';
 
@@ -81,23 +80,24 @@ describe('HTTP sunucusu', () => {
     assert.equal(r.citations[0].status, 'found');
   });
 
-  it('PDF yükler, metnini çıkarır ve pdfId ile doğrular', async () => {
-    const pdf = await makePdf(['Abstract. Ekim ayinda yillik enflasyon yuzde 31,2 olarak aciklandi.', 'doi:10.5555/demo.2019.042']);
-    const up = await fetch(`${base}/api/pdf`, { method: 'POST', headers: { 'Content-Type': 'application/pdf', 'X-Filename': encodeURIComponent('çalışma.pdf') }, body: pdf });
-    assert.equal(up.status, 200);
-    const meta = await up.json();
-    assert.equal(meta.name, 'çalışma.pdf');
-    assert.equal(meta.dois, 1);
-    const r = await (await post('/api/verify', { pdfId: meta.id })).json();
+  it('tarayıcıda çıkarılmış PDF metnini doğrular', async () => {
+    const pdf = { name: 'çalışma.pdf', pages: 2, text: 'Abstract. Ekim ayinda yillik enflasyon yuzde 31,2 olarak aciklandi.\nReferences\ndoi:10.5555/demo.2019.042' };
+    const r = await (await post('/api/verify', { pdf })).json();
     assert.equal(r.source.kind, 'pdf');
+    assert.equal(r.source.label, 'çalışma.pdf');
     assert.equal(r.citationSummary.retracted, 1);
   });
 
-  it('PDF olmayan dosyayı ve bilinmeyen pdfId\'yi reddeder', async () => {
-    const bad = await fetch(`${base}/api/pdf`, { method: 'POST', headers: { 'Content-Type': 'application/pdf' }, body: 'merhaba' });
-    assert.equal(bad.status, 400);
-    assert.match((await bad.json()).error, /PDF değil/);
-    assert.equal((await post('/api/verify', { pdfId: 'yok' })).status, 400);
+  it('metni olmayan ya da aşırı büyük PDF gövdesini reddeder', async () => {
+    const empty = await post('/api/verify', { pdf: { name: 'x.pdf', pages: 1, text: '   ' } });
+    assert.equal(empty.status, 400);
+    assert.match((await empty.json()).error, /seçilebilir metin yok/);
+    const huge = await post('/api/verify', { pdf: { name: 'x.pdf', pages: 1, text: 'a'.repeat(1_600_000) } });
+    assert.equal(huge.status, 400);
+  });
+
+  it('_headers gibi platform dosyalarını sunmaz', async () => {
+    assert.equal((await fetch(`${base}/_headers`)).status, 403);
   });
 
   it('kaynak katmanı listesini döndürür', async () => {

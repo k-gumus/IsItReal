@@ -11,17 +11,19 @@
     "test": "node --import tsx --test test/*.test.ts",
     "build": "tsc",
     "start:prod": "node dist/server/main.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev:worker": "wrangler dev",
+    "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "dotenv": "^16.4.5",
-    "unpdf": "^1.9.1"
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.7.284",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "wrangler": "^4.168.0"
   },
   "engines": {
     "node": ">=22"
