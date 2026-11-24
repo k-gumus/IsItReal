@@ -20,7 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "pdfjs-dist": "^5.7.284",
+    "pdfjs-dist": "^6.5.438",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "wrangler": "^4.168.0"

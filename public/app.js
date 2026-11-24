@@ -219,7 +219,8 @@ function loadPdfJs() {
 
 async function extractPdfText(file) {
   const pdfjs = await loadPdfJs();
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false, disableFontFace: true }).promise;
+  const task = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false, disableFontFace: true });
+  const doc = await task.promise;
   try {
     if (doc.numPages > MAX_PDF_PAGES) throw new Error(`PDF en fazla ${MAX_PDF_PAGES} sayfa olabilir (bu dosya ${doc.numPages} sayfa).`);
     let text = '';
@@ -236,7 +237,8 @@ async function extractPdfText(file) {
     } catch { /* üst veri isteğe bağlı */ }
     return { name: file.name, pages: doc.numPages, text: text.slice(0, MAX_PDF_CHARS), title };
   } finally {
-    doc.destroy();
+    // pdf.js 6: belge, yükleme görevi üzerinden kapatılır
+    task.destroy().catch(() => {});
   }
 }
 
