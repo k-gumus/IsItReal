@@ -1,316 +1,272 @@
-import { classifySource } from './authority';
-import { clusterEchoChambers } from './deduplicator';
-import { CitationEdge, EvidenceNode } from './types';
+import { classifySource, tierRank } from './authority.js';
+import { clusterEchoChambers } from './deduplicator.js';
+import { sanitizeUntrusted, UNTRUSTED_NOTICE } from './sanitize.js';
+import type { FactCheckProvider, SearchHit, StructuredLLMProvider, WebSearchProvider } from './providers.js';
+import type { CitationEdge, EvidenceNode, ProgressListener, StopReason, TraceResult } from './types.js';
+import { parsePointer, type PointerExtraction } from './validation.js';
 
-export interface SearchHit {
-  url: string;
-  title: string;
-  snippet: string;
-  publishedDate?: string;
-}
-
-export interface WebSearchProvider {
-  search(query: string, maxResults?: number): Promise<SearchHit[]>;
-}
-
-export interface StructuredLLMProvider {
-  generateJSON<T>(systemPrompt: string, userPrompt: string): Promise<T>;
-}
+// Geriye dönük uyumluluk: eski kod bu tipleri lineage-tracer'dan import ediyordu
+export type { SearchHit, StructuredLLMProvider, WebSearchProvider } from './providers.js';
 
 export interface TracerConfig {
-  maxDepth: number; // Önerilen: 2 (Hop 0: Genel + Teyit araması, Hop 1: Birincil kaynak izi)
-  googleFactCheckApiKey?: string;
+  /** Birincil kaynak izi için en fazla kaç atlama yapılacak. Önerilen: 2 */
+  maxDepth: number;
   languageCode?: string;
 }
 
-interface PointerExtraction {
-  hasPrimaryPointer: boolean;
-  targetedPrimaryQuery: string | null;
-  citedEntityOrDocument: string | null;
+export interface TraceOptions {
+  claimId?: string;
+  onProgress?: ProgressListener;
+}
+
+const MAX_QUERY_LENGTH = 300;
+
+/** Takip parametrelerini, #parçayı ve sondaki "/" işaretini atarak aynı sayfanın farklı URL'lerini birleştirir. */
+export function normalizeUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    url.hash = '';
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(utm_|fbclid|gclid|ref$|ref_src)/i.test(key)) url.searchParams.delete(key);
+    }
+    url.hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+    if (url.pathname.length > 1 && url.pathname.endsWith('/')) url.pathname = url.pathname.slice(0, -1);
+    return url.toString();
+  } catch {
+    return raw.trim();
+  }
+}
+
+export function normalizeQuery(q: string): string {
+  return q
+    .toLocaleLowerCase('tr-TR')
+    .replace(/["'“”‘’]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function toNeutralQuery(claim: string): string {
+  const q = claim.replace(/[!?."“”]/g, ' ').replace(/\s+/g, ' ').trim();
+  return q.length > MAX_QUERY_LENGTH ? q.slice(0, MAX_QUERY_LENGTH) : q;
 }
 
 export class CitationLineageTracer {
   private readonly maxDepth: number;
-  private readonly factCheckApiKey?: string;
   private readonly languageCode: string;
 
   constructor(
     private readonly searchProvider: WebSearchProvider,
     private readonly llm: StructuredLLMProvider,
-    config: TracerConfig = { maxDepth: 2, languageCode: 'tr' }
+    config: TracerConfig = { maxDepth: 2, languageCode: 'tr' },
+    private readonly factCheckProvider?: FactCheckProvider
   ) {
-    this.maxDepth = config.maxDepth;
-    this.factCheckApiKey = config.googleFactCheckApiKey;
+    this.maxDepth = Math.max(0, Math.min(4, Math.floor(config.maxDepth)));
     this.languageCode = config.languageCode ?? 'tr';
   }
 
-  /**
-   * 1. Aşama: Google Fact Check Tools API üzerinden IFCN teyit kontrolü
-   */
-  private async checkExistingFactChecks(claim: string): Promise<EvidenceNode[]> {
-    if (!this.factCheckApiKey) return [];
+  private verificationSuffix(): string {
+    return this.languageCode === 'tr' ? 'teyit OR yalanlandı OR resmi açıklama' : 'fact check OR debunked OR official statement';
+  }
 
-    const endpoint = new URL('https://factchecktools.googleapis.com/v1alpha1/claims:search');
-    endpoint.searchParams.set('query', claim);
-    endpoint.searchParams.set('languageCode', this.languageCode);
-    endpoint.searchParams.set('pageSize', '5');
-    endpoint.searchParams.set('key', this.factCheckApiKey);
-
+  /** Arama hatası tüm doğrulamayı düşürmesin: hatayı uyarıya çevir, boş sonuç dön. */
+  private async safeSearch(query: string, max: number, warnings: string[]): Promise<SearchHit[]> {
     try {
-      const res = await fetch(endpoint.toString());
-      if (!res.ok) return [];
-      const data = (await res.json()) as {
-        claims?: Array<{
-          text?: string;
-          claimReview?: Array<{
-            publisher?: { name?: string; site?: string };
-            url?: string;
-            title?: string;
-            reviewDate?: string;
-            textualRating?: string;
-          }>;
-        }>;
-      };
-
-      const nodes: EvidenceNode[] = [];
-      for (const item of data.claims ?? []) {
-        for (const review of item.claimReview ?? []) {
-          if (!review.url) continue;
-          const classification = classifySource(review.url, review.textualRating ?? '');
-          nodes.push({
-            id: `fc_${nodes.length + 1}`,
-            url: review.url,
-            domain: classification.domain,
-            title: review.title ?? 'Teyit İncelemesi',
-            snippet: `Teyit Sonucu (${review.publisher?.name ?? classification.domain}): ${review.textualRating ?? 'İncelendi'} — İddia: "${item.text ?? claim}"`,
-            publishedDate: review.reviewDate,
-            tier: 'TIER_1_TERMINAL_PROOF',
-            isTerminalProof: true,
-            hopDepth: 0,
-          });
-        }
-      }
-      return nodes;
-    } catch {
+      const hits = await this.searchProvider.search(query, max);
+      return Array.isArray(hits) ? hits.filter((h) => h && typeof h.url === 'string') : [];
+    } catch (err) {
+      warnings.push(`Arama başarısız ("${query.slice(0, 60)}"): ${(err as Error).message}`);
       return [];
     }
   }
 
-  /**
-   * 2. Aşama: İkincil haber metinlerinden "Kök Kanıt İşaretçisi" (Citation Pointer) çıkarımı
-   */
-  private async extractCitationPointer(
-    claim: string,
-    secondaryNodes: EvidenceNode[]
-  ): Promise<PointerExtraction> {
-    const context = secondaryNodes
-      .slice(0, 5)
-      .map((n, i) => `[${i + 1}] (${n.domain}) ${n.title}: ${n.snippet}`)
+  private async fetchFactChecks(claim: string, warnings: string[]): Promise<EvidenceNode[]> {
+    if (!this.factCheckProvider) return [];
+    try {
+      const reviews = await this.factCheckProvider.search(claim, this.languageCode);
+      return reviews.slice(0, 5).map((review, i) => {
+        const { domain } = classifySource(review.url);
+        return {
+          id: `fc_${i + 1}`,
+          url: review.url,
+          domain,
+          title: review.title || 'Teyit incelemesi',
+          snippet: `Teyit sonucu (${review.publisher || domain}): ${review.rating || 'İncelendi'}. İncelenen iddia: "${review.claimText || claim}"`,
+          publishedDate: review.reviewDate,
+          // Google Fact Check Tools yalnızca ClaimReview yayınlayan teyit kuruluşlarını listeler
+          tier: 'TIER_1_TERMINAL_PROOF',
+          isTerminalProof: true,
+          hopDepth: 0,
+          origin: 'factcheck',
+        } satisfies EvidenceNode;
+      });
+    } catch (err) {
+      warnings.push(`Teyit veritabanı sorgulanamadı: ${(err as Error).message}`);
+      return [];
+    }
+  }
+
+  /** İkincil haber metinlerinden "kök kanıt işaretçisi" (citation pointer) çıkarımı */
+  private async extractCitationPointer(claim: string, sources: EvidenceNode[]): Promise<PointerExtraction> {
+    const context = sources
+      .map((n, i) => `[${i + 1}] (${n.domain}) ${sanitizeUntrusted(n.title, 200)}: ${sanitizeUntrusted(n.snippet, 500)}`)
       .join('\n');
 
     const systemPrompt = `Sen bir araştırma gazetecisi ve bilgi doğrulama ajanısın.
 Görevin: Verilen haber parçacıklarında iddianın dayandırıldığı BİRİNCİL BELGE, RESMİ KURUM, AKADEMİK MAKALE veya HAM VERİ işaretçisini bulmaktır.
 Kurallar:
-- Eğer haberlerde sadece "uzmanlar uyardı", "kulislerde konuşuluyor", "sosyal medyada gündem oldu" gibi belirsiz ifadeler varsa hasPrimaryPointer = false döndür.
-- Eğer somut bir kurum/belge varsa (örn. "TÜİK Ekim 2026 enflasyon verisi", "Resmi Gazete 32712 sayılı karar", "Nature 2025 makalesi"), bunu doğrudan o birincil kaynağı bulacak hedef odaklı bir arama sorgusuna (mümkünse site: operatörüyle) dönüştür.
+- Haberlerde sadece "uzmanlar uyardı", "kulislerde konuşuluyor", "sosyal medyada gündem oldu" gibi belirsiz ifadeler varsa hasPrimaryPointer = false döndür.
+- Somut bir kurum/belge varsa (örn. "TÜİK Ekim enflasyon verisi", "Resmi Gazete 32712 sayılı karar", "Nature 2025 makalesi"), bunu doğrudan o birincil kaynağı bulacak hedef odaklı bir arama sorgusuna (mümkünse site: operatörüyle) dönüştür.
+- sourceIndex: işaretçiyi hangi numaralı kaynakta bulduğun (1 tabanlı).
+${UNTRUSTED_NOTICE}
 Sadece geçerli JSON döndür:
 {
   "hasPrimaryPointer": boolean,
   "citedEntityOrDocument": string | null,
-  "targetedPrimaryQuery": string | null
+  "targetedPrimaryQuery": string | null,
+  "sourceIndex": number | null
 }`;
 
-    return this.llm.generateJSON<PointerExtraction>(
+    const raw = await this.llm.generateJSON(
       systemPrompt,
-      `İddia: "${claim}"\n\nBulunan İkincil Kaynaklar:\n${context}`
+      `İddia: "${sanitizeUntrusted(claim, 400)}"\n\n<kanitlar>\n${context}\n</kanitlar>`,
+      { task: 'pointer' }
     );
+    return parsePointer(raw, sources.length);
   }
 
-  /**
-   * 3. Aşama: Döngü Korumalı (Cycle-Safe) Kaynak Soy Ağacı İz Sürücü
-   */
-  public async traceClaim(claim: string): Promise<{
-    nodes: EvidenceNode[];
-    edges: CitationEdge[];
-    stopReason:
-      | 'TERMINAL_PROOF_REACHED'
-      | 'IFCN_FACTCHECK_MATCH'
-      | 'MAX_DEPTH_EXCEEDED'
-      | 'CYCLE_DETECTED'
-      | 'NO_CITATION_POINTER';
-    uniqueClusterCount: number;
-    rawResultCount: number;
-    isEchoChamber: boolean;
-  }> {
+  /** Döngü korumalı (cycle-safe) kaynak soy ağacı iz sürücü */
+  public async traceClaim(claim: string, options: TraceOptions = {}): Promise<TraceResult> {
+    const claimId = options.claimId ?? 'claim';
+    const emit = options.onProgress ?? (() => {});
+    const warnings: string[] = [];
     const visitedUrls = new Set<string>();
     const visitedQueries = new Set<string>();
-    const allNodes: EvidenceNode[] = [];
+    let nodes: EvidenceNode[] = [];
     const edges: CitationEdge[] = [];
 
-    // Adım 0A: Önce IFCN Teyit Veritabanını sorgula (Fast-Path)
-    const factCheckNodes = await this.checkExistingFactChecks(claim);
-    if (factCheckNodes.length > 0) {
-      for (const fc of factCheckNodes) {
-        visitedUrls.add(fc.url);
-        allNodes.push(fc);
-      }
-      return {
-        nodes: allNodes,
-        edges,
-        stopReason: 'IFCN_FACTCHECK_MATCH',
-        uniqueClusterCount: allNodes.length,
-        rawResultCount: allNodes.length,
-        isEchoChamber: false,
-      };
-    }
-
-    // Adım 0B: Çok yönlü ilk web taraması (Tarafsız iddia + teyit sorgusu)
-    const neutralQuery = claim.replace(/[!?."“”]/g, '').trim();
-    const verificationQuery = `${neutralQuery} teyit OR yalanlandı OR resmi açıklama`;
-
-    visitedQueries.add(neutralQuery.toLowerCase());
-    visitedQueries.add(verificationQuery.toLowerCase());
-
-    const [rawHitsA, rawHitsB] = await Promise.all([
-      this.searchProvider.search(neutralQuery, 6),
-      this.searchProvider.search(verificationQuery, 4),
-    ]);
-
-    const initialHits = [...rawHitsA, ...rawHitsB];
-    for (const hit of initialHits) {
-      if (visitedUrls.has(hit.url)) continue;
-      visitedUrls.add(hit.url);
-
-      const { domain, tier, isTerminalProof } = classifySource(hit.url, hit.snippet);
-      allNodes.push({
-        id: `node_0_${allNodes.length + 1}`,
-        url: hit.url,
-        domain,
-        title: hit.title,
-        snippet: hit.snippet,
-        publishedDate: hit.publishedDate,
-        tier,
-        isTerminalProof,
-        hopDepth: 0,
-      });
-    }
-
-    // Yankı odası / kopya metin kümelemesi
-    const { clusteredNodes, uniqueClusterCount, isEchoChamber } = clusterEchoChambers(allNodes);
-    allNodes.splice(0, allNodes.length, ...clusteredNodes);
-
-    // Hop 0'da doğrudan Kök Kanıt Düğümü (resmi site, DOI, teyit.org vb.) bulunduysa dur!
-    if (allNodes.some((n) => n.isTerminalProof)) {
-      return {
-        nodes: allNodes,
-        edges,
-        stopReason: 'TERMINAL_PROOF_REACHED',
-        uniqueClusterCount,
-        rawResultCount: allNodes.length,
-        isEchoChamber,
-      };
-    }
-
-    // Döngü Kesici: Tüm sonuçlar tek bir kopya kümesine sıkışmışsa ve derinlik 1'den büyükse dur
-    if (isEchoChamber && this.maxDepth < 1) {
-      return {
-        nodes: allNodes,
-        edges,
-        stopReason: 'CYCLE_DETECTED',
-        uniqueClusterCount,
-        rawResultCount: allNodes.length,
-        isEchoChamber,
-      };
-    }
-
-    // Adım 1..MAX_DEPTH: İkincil haberlerden birincil kaynak izi sürme
-    let currentDepth = 1;
-    while (currentDepth <= this.maxDepth) {
-      const secondaryCandidates = allNodes.filter((n) => n.hopDepth === currentDepth - 1);
-      if (secondaryCandidates.length === 0) break;
-
-      const pointer = await this.extractCitationPointer(claim, secondaryCandidates);
-
-      if (!pointer.hasPrimaryPointer || !pointer.targetedPrimaryQuery) {
-        return {
-          nodes: allNodes,
-          edges,
-          stopReason: 'NO_CITATION_POINTER',
-          uniqueClusterCount,
-          rawResultCount: allNodes.length,
-          isEchoChamber,
-        };
-      }
-
-      const normalizedNextQuery = pointer.targetedPrimaryQuery.toLowerCase().trim();
-      // Aynı sorguya tekrar düşülüyorsa döngü kesici devreye girer
-      if (visitedQueries.has(normalizedNextQuery)) {
-        return {
-          nodes: allNodes,
-          edges,
-          stopReason: 'CYCLE_DETECTED',
-          uniqueClusterCount,
-          rawResultCount: allNodes.length,
-          isEchoChamber,
-        };
-      }
-      visitedQueries.add(normalizedNextQuery);
-
-      const primaryHits = await this.searchProvider.search(pointer.targetedPrimaryQuery, 5);
-      let foundTerminalInThisHop = false;
-
-      for (const hit of primaryHits) {
-        if (visitedUrls.has(hit.url)) continue;
-        visitedUrls.add(hit.url);
-
-        const { domain, tier, isTerminalProof } = classifySource(hit.url, hit.snippet);
-        const newNode: EvidenceNode = {
-          id: `node_${currentDepth}_${allNodes.length + 1}`,
+    const addHits = (hits: SearchHit[], hop: number, pointer: string | null): EvidenceNode[] => {
+      const added: EvidenceNode[] = [];
+      for (const hit of hits) {
+        const key = normalizeUrl(hit.url);
+        if (visitedUrls.has(key)) continue;
+        visitedUrls.add(key);
+        const { domain, tier, isTerminalProof } = classifySource(hit.url, hit.snippet ?? '');
+        if (domain === 'unknown') continue; // http(s) olmayan veya bozuk adresleri kanıt sayma
+        const node: EvidenceNode = {
+          id: `node_${hop}_${nodes.length + added.length + 1}`,
           url: hit.url,
           domain,
-          title: hit.title,
-          snippet: hit.snippet,
+          title: (hit.title ?? '').trim() || domain,
+          snippet: (hit.snippet ?? '').trim(),
           publishedDate: hit.publishedDate,
           tier,
           isTerminalProof,
-          hopDepth: currentDepth,
-          citationPointer: pointer.citedEntityOrDocument,
+          hopDepth: hop,
+          citationPointer: pointer,
+          origin: 'search',
         };
-        allNodes.push(newNode);
+        added.push(node);
+        emit({ type: 'evidence', claimId, node });
+      }
+      nodes.push(...added);
+      return added;
+    };
 
-        // Soy ağacı kenarını (edge) bağla
-        edges.push({
-          fromNodeId: secondaryCandidates[0].id,
-          toNodeId: newNode.id,
-          relation: isTerminalProof ? 'CITES_PRIMARY' : 'SUPPORTS',
-        });
+    const finish = (stopReason: StopReason, isEchoChamber: boolean): TraceResult => {
+      // Son kümeleme: tüm atlamalardaki düğümleri kapsar; kopya haberleri SYNDICATED_COPY kenarlarıyla bağla
+      const final = clusterEchoChambers(nodes);
+      nodes = final.clusteredNodes;
+      const reps = new Map(nodes.filter((n) => n.isClusterRepresentative).map((n) => [n.clusterId, n.id]));
+      for (const n of nodes) {
+        const repId = reps.get(n.clusterId);
+        if (repId && repId !== n.id) edges.push({ fromNodeId: repId, toNodeId: n.id, relation: 'SYNDICATED_COPY' });
+      }
+      return {
+        nodes,
+        edges,
+        stopReason,
+        uniqueClusterCount: final.uniqueClusterCount,
+        rawResultCount: nodes.length,
+        isEchoChamber,
+        warnings,
+      };
+    };
 
-        if (isTerminalProof) {
-          foundTerminalInThisHop = true;
-        }
+    // Adım 0: Teyit veritabanı + çok yönlü ilk web taraması (paralel)
+    const neutralQuery = toNeutralQuery(claim);
+    const verificationQuery = `${neutralQuery} ${this.verificationSuffix()}`;
+    visitedQueries.add(normalizeQuery(neutralQuery));
+    visitedQueries.add(normalizeQuery(verificationQuery));
+    emit({ type: 'search', claimId, hop: 0, query: neutralQuery });
+
+    const [factChecks, hitsA, hitsB] = await Promise.all([
+      this.fetchFactChecks(claim, warnings),
+      this.safeSearch(neutralQuery, 6, warnings),
+      this.safeSearch(verificationQuery, 4, warnings),
+    ]);
+
+    for (const fc of factChecks) {
+      visitedUrls.add(normalizeUrl(fc.url));
+      nodes.push(fc);
+      emit({ type: 'evidence', claimId, node: fc });
+    }
+    addHits([...hitsA, ...hitsB], 0, null);
+
+    if (nodes.length === 0) return finish('NO_RESULTS', false);
+
+    const hop0 = clusterEchoChambers(nodes.filter((n) => n.origin !== 'factcheck'));
+    const isEchoChamber = hop0.isEchoChamber;
+
+    if (factChecks.length > 0) return finish('IFCN_FACTCHECK_MATCH', isEchoChamber);
+    if (nodes.some((n) => n.isTerminalProof)) return finish('TERMINAL_PROOF_REACHED', isEchoChamber);
+    if (this.maxDepth < 1) return finish('MAX_DEPTH_EXCEEDED', isEchoChamber);
+
+    // Adım 1..maxDepth: ikincil haberlerden birincil kaynak izi sürme
+    let frontier = hop0.clusteredNodes.filter((n) => n.isClusterRepresentative);
+    for (let depth = 1; depth <= this.maxDepth; depth++) {
+      const sources = [...frontier].sort((a, b) => tierRank(a.tier) - tierRank(b.tier)).slice(0, 5);
+      if (sources.length === 0) break;
+
+      let pointer: PointerExtraction;
+      try {
+        pointer = await this.extractCitationPointer(claim, sources);
+      } catch (err) {
+        warnings.push(`Kök kanıt işaretçisi çıkarılamadı: ${(err as Error).message}`);
+        return finish('NO_CITATION_POINTER', isEchoChamber);
       }
 
-      if (foundTerminalInThisHop) {
-        return {
-          nodes: allNodes,
-          edges,
-          stopReason: 'TERMINAL_PROOF_REACHED',
-          uniqueClusterCount,
-          rawResultCount: allNodes.length,
-          isEchoChamber,
-        };
+      if (!pointer.hasPrimaryPointer || !pointer.targetedPrimaryQuery) return finish('NO_CITATION_POINTER', isEchoChamber);
+
+      const nextQuery = pointer.targetedPrimaryQuery.slice(0, MAX_QUERY_LENGTH);
+      const normalized = normalizeQuery(nextQuery);
+      if (visitedQueries.has(normalized)) return finish('CYCLE_DETECTED', isEchoChamber);
+      visitedQueries.add(normalized);
+
+      emit({ type: 'pointer', claimId, hop: depth, pointer: pointer.citedEntityOrDocument ?? nextQuery });
+      emit({ type: 'search', claimId, hop: depth, query: nextQuery });
+
+      const hits = await this.safeSearch(nextQuery, 5, warnings);
+      const added = addHits(hits, depth, pointer.citedEntityOrDocument);
+
+      if (hits.length > 0 && added.length === 0) {
+        // Arama yalnızca daha önce görülen sayfaları döndürdü: kaynaklar kendi içinde dönüyor
+        return finish('CYCLE_DETECTED', isEchoChamber);
+      }
+      if (added.length === 0) {
+        warnings.push(`"${nextQuery.slice(0, 60)}" sorgusu sonuç döndürmedi.`);
+        return finish('NO_CITATION_POINTER', isEchoChamber);
       }
 
-      currentDepth++;
+      // Soy ağacı kenarı: işaretçinin bulunduğu kaynaktan yeni bulunan düğümlere
+      const parent = (pointer.sourceIndex ? sources[pointer.sourceIndex - 1] : undefined) ?? sources[0]!;
+      for (const node of added) {
+        edges.push({ fromNodeId: parent.id, toNodeId: node.id, relation: node.isTerminalProof ? 'CITES_PRIMARY' : 'SUPPORTS' });
+      }
+
+      if (added.some((n) => n.isTerminalProof)) return finish('TERMINAL_PROOF_REACHED', isEchoChamber);
+      frontier = added;
     }
 
-    return {
-      nodes: allNodes,
-      edges,
-      stopReason: 'MAX_DEPTH_EXCEEDED',
-      uniqueClusterCount,
-      rawResultCount: allNodes.length,
-      isEchoChamber,
-    };
+    return finish('MAX_DEPTH_EXCEEDED', isEchoChamber);
   }
 }

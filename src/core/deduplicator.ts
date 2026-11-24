@@ -1,9 +1,10 @@
-import { EvidenceNode } from './types';
+import { tierRank } from './authority.js';
+import type { EvidenceNode } from './types.js';
 
-function tokenizeShingles(text: string, k = 3): Set<string> {
+export function tokenizeShingles(text: string, k = 3): Set<string> {
   const normalized = text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    .toLocaleLowerCase('tr-TR')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -31,60 +32,47 @@ export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
   return union === 0 ? 0 : intersection / union;
 }
 
-/**
- * Benzerlik eşiği (0.55) üzerindeki metinleri aynı "syndication" kümesine atar.
- * Her kümeden en yüksek otoriteye sahip düğümü temsilci olarak bırakır.
- */
-export function clusterEchoChambers(
-  nodes: EvidenceNode[],
-  similarityThreshold = 0.55
-): {
+export interface ClusterResult {
   clusteredNodes: EvidenceNode[];
   uniqueClusterCount: number;
   isEchoChamber: boolean;
-} {
-  const shinglesMap = new Map<string, Set<string>>();
+}
+
+/**
+ * Benzerlik eşiği üzerindeki metinleri aynı "syndication" (kopya haber) kümesine atar.
+ * Tek bağlantılı kümeleme kullanır: bir metin kümedeki herhangi bir üyeye yeterince benziyorsa o kümeye girer
+ * (A→B→C şeklinde zincirleme kopyaları da yakalar).
+ * Her kümede en yüksek otoriteye sahip düğüm temsilci olarak işaretlenir.
+ */
+export function clusterEchoChambers(nodes: EvidenceNode[], similarityThreshold = 0.55): ClusterResult {
+  const shingles = new Map<string, Set<string>>();
   for (const node of nodes) {
-    shinglesMap.set(node.id, tokenizeShingles(`${node.title} ${node.snippet}`));
+    shingles.set(node.id, tokenizeShingles(`${node.title} ${node.snippet}`));
   }
 
   const clusters: EvidenceNode[][] = [];
 
   for (const node of nodes) {
-    const currentShingles = shinglesMap.get(node.id)!;
-    let placed = false;
-
-    for (const cluster of clusters) {
-      const representative = cluster[0];
-      const repShingles = shinglesMap.get(representative.id)!;
-      if (jaccardSimilarity(currentShingles, repShingles) >= similarityThreshold) {
-        cluster.push(node);
-        placed = true;
-        break;
-      }
-    }
-
-    if (!placed) {
-      clusters.push([node]);
-    }
+    const current = shingles.get(node.id) ?? new Set<string>();
+    const target = clusters.find((cluster) =>
+      cluster.some((member) => jaccardSimilarity(current, shingles.get(member.id) ?? new Set()) >= similarityThreshold)
+    );
+    if (target) target.push(node);
+    else clusters.push([node]);
   }
 
   const clusteredNodes: EvidenceNode[] = [];
   clusters.forEach((cluster, idx) => {
     const clusterId = `cluster_${idx + 1}`;
+    const representative = [...cluster].sort((a, b) => tierRank(a.tier) - tierRank(b.tier))[0];
     for (const item of cluster) {
-      clusteredNodes.push({ ...item, clusterId });
+      clusteredNodes.push({ ...item, clusterId, isClusterRepresentative: item.id === representative?.id });
     }
   });
 
-  // 4 veya daha fazla sonuç bulunup bunların %70'inden fazlası tek bir kopya kümesine yığılıyorsa yankı odasıdır
+  // En az 4 sonuç varsa ve bunların %70'i tek bir kopya kümesine yığılmışsa (en fazla 2 küme) yankı odasıdır
   const largestClusterSize = clusters.reduce((max, c) => Math.max(max, c.length), 0);
-  const isEchoChamber =
-    nodes.length >= 4 && largestClusterSize / nodes.length >= 0.7 && clusters.length <= 2;
+  const isEchoChamber = nodes.length >= 4 && largestClusterSize / nodes.length >= 0.7 && clusters.length <= 2;
 
-  return {
-    clusteredNodes,
-    uniqueClusterCount: clusters.length,
-    isEchoChamber,
-  };
+  return { clusteredNodes, uniqueClusterCount: clusters.length, isEchoChamber };
 }

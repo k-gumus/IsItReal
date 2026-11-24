@@ -1,12 +1,16 @@
 {
   "name": "isitreal",
-  "version": "0.1.0",
-  "description": "Lateral reading & bounded citation-lineage verification engine",
+  "version": "0.2.0",
+  "description": "Bilgi kirliliğine karşı kaynak soy ağacı izleyen doğrulama motoru ve web arayüzü",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/server/main.ts",
+    "demo": "tsx src/server/main.ts --demo",
+    "dev": "tsx watch src/server/main.ts",
     "verify": "tsx src/index.ts",
+    "test": "node --import tsx --test test/*.test.ts",
     "build": "tsc",
+    "start:prod": "node dist/server/main.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -16,5 +20,9 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
-  }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
 }
