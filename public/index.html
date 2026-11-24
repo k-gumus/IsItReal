@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IsItReal: Bu haber nereden çıktı?</title>
+  <meta name="description" content="Sana ulaşan haberi yapıştır; kaynaklarını kökene kadar izleyelim, birbirini kopyalayan siteleri ayıklayalım.">
+  <meta name="theme-color" content="#EEF0F3">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/fonts/bricolage-grotesque-latin-standard-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <p class="demo-bar" id="demo-bar" hidden>
+    Demo modundasın: sonuçlar kurgusal örnek verilerle üretiliyor. Gerçek tarama için <code>.env</code> dosyasına API anahtarlarını ekle.
+  </p>
+
+  <header class="masthead">
+    <a class="wordmark" href="/" aria-label="IsItReal ana sayfa">IsItReal</a>
+    <a class="masthead-link" href="https://github.com/k-gumus/IsItReal" rel="noopener noreferrer">Kaynak kod</a>
+  </header>
+
+  <main>
+    <section class="ask" aria-labelledby="title">
+      <h1 id="title">Bu haber nereden çıktı?</h1>
+      <p class="lead">
+        Sana ulaşan mesajı, başlığı ya da iddiayı yapıştır. Kaynaklarını kökene kadar izleyip birbirini kopyalayan siteleri ayıklıyoruz ve iddianın neye dayandığını gösteriyoruz.
+      </p>
+
+      <form id="form" class="ask-form" novalidate>
+        <label for="text" class="visually-hidden">Doğrulanacak metin</label>
+        <textarea id="text" name="text" rows="5" maxlength="4000" required
+          placeholder="Örneğin: “Uzmanlar uyardı! Yeni düzenlemeyle tüm elektronik cihazlara %50 ek vergi kesinleşti.”"></textarea>
+        <div class="ask-actions">
+          <span class="count" id="count" aria-live="off">0 / 4000</span>
+          <button type="button" class="ghost" id="cancel" hidden>Durdur</button>
+          <button type="submit" id="submit">Kaynağını izle</button>
+        </div>
+        <p class="form-error" id="form-error" role="alert" hidden></p>
+      </form>
+
+      <div class="examples">
+        <span id="examples-label">Örnek dene:</span>
+        <ul aria-labelledby="examples-label">
+          <li><button type="button" data-example="Uzmanlar uyardı! Yeni düzenlemeyle tüm elektronik cihazlara %50 ek vergi kesinleşti.">Elektronik vergisi</button></li>
+          <li><button type="button" data-example="Ekim ayında yıllık enflasyon yüzde 31,2 olarak açıklandı.">Ekim enflasyonu</button></li>
+          <li><button type="button" data-example="ŞOK! Yarın İstanbul'da 8 büyüklüğünde deprem olacak, yetkililer biliyor ama saklıyor!!!">Deprem tahmini</button></li>
+        </ul>
+      </div>
+    </section>
+
+    <details class="progress" id="progress" hidden open>
+      <summary id="progress-title">İz kaydı</summary>
+      <ol class="log" id="log" aria-live="polite"></ol>
+    </details>
+
+    <section class="report" id="report" hidden aria-labelledby="verdict-title">
+      <div class="verdict" id="verdict">
+        <h2 id="verdict-title" class="verdict-name"></h2>
+        <p class="verdict-summary" id="verdict-summary"></p>
+        <div class="scale" id="scale">
+          <p class="scale-caption"><span>Şeffaflık puanı</span> <strong id="score"></strong></p>
+          <div class="scale-track" aria-hidden="true">
+            <span class="scale-marker" id="scale-marker"></span>
+          </div>
+          <p class="scale-ends" aria-hidden="true"><span>Dayanaksız</span><span>Kökene dayanıyor</span></p>
+        </div>
+        <p class="verdict-meta" id="verdict-meta"></p>
+      </div>
+
+      <div id="claims" class="claims"></div>
+
+      <section class="signals" id="signals" hidden aria-labelledby="signals-title">
+        <h2 id="signals-title">Metindeki manipülasyon izleri</h2>
+        <blockquote class="marked" id="marked"></blockquote>
+        <dl class="signal-list" id="signal-list"></dl>
+      </section>
+
+      <section class="tips" id="tips" aria-labelledby="tips-title">
+        <h2 id="tips-title">Kendin doğrula</h2>
+        <ul id="tip-list"></ul>
+      </section>
+
+      <details class="notes" id="notes" hidden>
+        <summary>Teknik notlar</summary>
+        <ul id="note-list"></ul>
+      </details>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>
+      IsItReal iddiayı atomik cümlelere ayırır, web'de arar, kopya haberleri metin benzerliğiyle kümeler ve haberlerin atıf yaptığı birincil belgeyi en fazla iki adımda arar.
+      Dil modelinin kararı kodla denetlenir: resmi kurum, akademik yayın ya da teyit kuruluşu kaydı olmadan hiçbir iddia “doğrulandı” sayılmaz.
+    </p>
+    <p>Sonuçlar bir karar değil, bir başlangıç noktasıdır. Kaynaklara tıklayıp kendin oku.</p>
+  </footer>
+
+  <template id="tpl-claim">
+    <article class="claim">
+      <header class="claim-head">
+        <p class="claim-text"></p>
+        <p class="claim-verdict"><span class="claim-verdict-name"></span> <span class="claim-confidence"></span></p>
+      </header>
+      <p class="claim-reasoning"></p>
+      <p class="claim-guard" hidden></p>
+      <p class="claim-stop"></p>
+      <figure class="strata">
+        <figcaption class="visually-hidden">Kaynak katmanları: yukarıda sosyal medya, en altta birincil kaynaklar</figcaption>
+        <div class="stratum" data-tier="TIER_4_SOCIAL_UNVERIFIED">
+          <div class="stratum-label"><span>Sosyal medya</span><small>doğrulanmamış paylaşımlar</small></div>
+          <div class="stratum-nodes"></div>
+        </div>
+        <div class="stratum" data-tier="TIER_3_SECONDARY_AGGREGATOR">
+          <div class="stratum-label"><span>İkincil siteler</span><small>portallar, bloglar, aktarımlar</small></div>
+          <div class="stratum-nodes"></div>
+        </div>
+        <div class="stratum" data-tier="TIER_2_WIRE_JOURNALISM">
+          <div class="stratum-label"><span>Haber kuruluşları</span><small>muhabirlik yapan ajanslar</small></div>
+          <div class="stratum-nodes"></div>
+        </div>
+        <div class="stratum" data-tier="TIER_1_TERMINAL_PROOF">
+          <div class="stratum-label"><span>Kök kanıt</span><small>resmi kurum, akademik yayın, teyit kuruluşu</small></div>
+          <div class="stratum-nodes"></div>
+        </div>
+        <svg class="edges" aria-hidden="true"></svg>
+      </figure>
+    </article>
+  </template>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
