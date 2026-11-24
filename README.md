@@ -1,16 +1,38 @@
 # IsItReal: Bu haber nereden çıktı?
 
-Bilgi kirliliğine karşı, arama motoru gibi çalışan bir doğrulama aracı. Sana ulaşan mesajı, başlığı ya da iddiayı yapıştırırsın; IsItReal:
+Bilgi kirliliğine karşı, arama motoru gibi çalışan bir doğrulama aracı. Üst bardaki kutuya **metin, bağlantı ya da DOI** yapıştırırsın veya bir **PDF** bırakırsın; IsItReal:
 
 1. metni doğrulanabilir atomik iddialara ayırır ve manipülatif dil kalıplarını işaretler,
 2. her iddiayı web'de ve (varsa) teyit kuruluşlarının veritabanında arar,
 3. birbirini kopyalayan haberleri metin benzerliğiyle kümeler ve **yankı odalarını** yakalar,
 4. haberlerin atıf yaptığı **birincil kaynağı** (resmi kurum, akademik yayın, teyit kuruluşu) en fazla iki adımda izler,
-5. toplanan kanıtları bir dil modeline tartırır, ardından modelin kararını **kodla denetler**.
+5. metinde ya da PDF'te geçen **DOI'leri denetler**: yayın gerçekten var mı, geri çekilmiş mi, düzeltme almış mı (yapay zekânın uydurduğu atıflar burada yakalanır),
+6. toplanan kanıtları bir dil modeline tartırır, ardından modelin kararını **kodla denetler**.
 
-![IsItReal arayüzü: doğrulanmış bir iddia birincil bültene iniyor, diğeri beş kopya siteden oluşan bir yankı odası](docs/ekran-goruntusu.png)
+![IsItReal: PDF'teki bir iddia birincil bültene kadar izlenmiş](docs/ekran-goruntusu.png)
 
-*Görseldeki veriler demo modunun kurgusal verileridir.*
+![Aynı PDF'in atıf denetimi: biri kayıtlı, biri geri çekilmiş, biri hiç kayıtlı değil](docs/ekran-atiflar.png)
+
+*Görsellerdeki veriler demo modunun kurgusal verileridir.*
+
+## Girdi türleri
+
+| Girdi | Ne olur |
+| --- | --- |
+| Metin | İddialara ayrılır, her biri web'de izlenir; metindeki DOI'ler ayrıca denetlenir |
+| Bağlantı | Sayfanın metni Tavily Extract ile alınır, sitenin kendi kaynak katmanı gösterilir |
+| DOI (`10.xxxx/...`, `doi:...`, `doi.org/...`) | Yayın kaydı, yazarlar, dergi, yıl, atıf sayısı, geri çekme ve düzeltme bildirimleri |
+| PDF (en fazla 15 MB, 80 sayfa) | Özet bölümü doğrulanır, kaynakça ayıklanır, içindeki tüm DOI'ler (en fazla 25) denetlenir |
+
+DOI denetimi anahtar gerektirmeyen açık servislerle yapılır: önce Crossref (geri çekme bilgisi Retraction Watch verisi dahil `updated-by` alanından), orada yoksa doi.org handle API'si (DOI hiç kayıtlı mı?), kayıtlıysa DataCite. Bu yüzden demo modunda bile gerçek DOI'ler gerçekten sorgulanır; yalnızca `10.5555/demo.*` önekli kurgusal DOI'ler demo kayıtlardan yanıtlanır.
+
+## Arayüz
+
+GitHub tarzı koyu bir arayüz, ekran yüksekliğine sabit (masaüstünde sayfa kaydırması yok, dar ekranlarda var):
+
+- **Üst bar:** arama kutusu girdinin türünü kendiliğinden tanır (Metin / Bağlantı / DOI). Ataç düğmesiyle ya da sayfaya sürükleyip bırakarak PDF eklenir. `/` tuşu kutuya odaklanır, Enter izlemeyi başlatır.
+- **Sekmeler:** Doğrula, Geçmiş (son 15 doğrulama yalnızca tarayıcında saklanır), Kaynak katmanları (hangi alan adı hangi katmanda), Nasıl çalışır.
+- **Doğrula:** iddialar ve atıflar arasında geçiş, dört katmanlı kaynak görünümü (kopya siteler üst üste yığın, birincil kaynağa inen atıf çizgisi), sağda karar, şeffaflık puanı, manipülasyon izleri ve "kendin doğrula" önerileri.
 
 ## Hızlı başlangıç
 
@@ -31,6 +53,7 @@ Gerçek tarama için `.env.example` dosyasını `.env` olarak kopyalayıp anahta
 | `GEMINI_API_KEY` | Evet | [Google AI Studio](https://aistudio.google.com/apikey) |
 | `GOOGLE_FACTCHECK_API_KEY` | Hayır | Google Cloud'da Fact Check Tools API |
 | `GEMINI_MODEL` | Hayır | Varsayılan `gemini-3.8-flash` |
+| `CROSSREF_MAILTO` | Hayır | E-posta adresin; Crossref'in daha hızlı "polite" havuzunu kullanmak için |
 
 ```bash
 npm start           # anahtarlar varsa canlı mod, yoksa otomatik demo
@@ -46,7 +69,7 @@ npm run verify -- --json "Metin"         # ham JSON rapor
 | `npm run demo` | Anahtarlar olsa bile demo modunda başlatır |
 | `npm run dev` | Dosya değiştikçe yeniden başlatır |
 | `npm run verify` | Komut satırı doğrulaması |
-| `npm test` | 74 birim ve entegrasyon testi |
+| `npm test` | 100 birim ve entegrasyon testi |
 | `npm run typecheck` | Katı (strict) TypeScript denetimi |
 | `npm run build` ve `npm run start:prod` | `dist/` derleyip derlenmiş sürümü çalıştırır |
 
@@ -100,7 +123,10 @@ Kaynaklar dört katmana ayrılır: sosyal medya, ikincil siteler, haber kuruluş
 ```
 src/
   core/                 saf doğrulama mantığı (ağ erişimi yok)
-    pipeline.ts         uçtan uca akış: ayrıştır → iz sür → yargıla → puanla
+    analyze.ts          giriş noktası: metin / bağlantı / DOI / PDF yönlendirmesi, atıf denetimi
+    input.ts            girdi türü tespiti, DOI çıkarma, kaynakça ayıklama
+    citations.ts        DOI denetim tipleri, sınırlı eşzamanlı denetim
+    pipeline.ts         iddia hattı: ayrıştır → iz sür → yargıla → puanla
     lineage-tracer.ts   döngü korumalı kaynak soy ağacı izleyicisi
     authority.ts        alan adından kaynak katmanı (Tier 1-4)
     deduplicator.ts     shingle + Jaccard ile kopya haber kümeleme
@@ -109,10 +135,11 @@ src/
     manipulation.ts     model gerektirmeyen manipülasyon dili tespiti
     validation.ts       güvenilmez LLM çıktısını tipe zorlama
     sanitize.ts         web metnini isteme koymadan önce temizleme
-  adapters/             dış servisler: Tavily, Gemini, Google Fact Check, demo
+  adapters/             dış servisler: Tavily (arama + extract), Gemini, Google Fact Check,
+                        Crossref / doi.org / DataCite (doi.ts), PDF metni (pdf.ts), demo
   server/               HTTP sunucusu, hız sınırı, önbellek
   index.ts              komut satırı
-public/                 arayüz (HTML, CSS, JS; derleme adımı yok)
+public/                 arayüz (HTML, CSS, JS; derleme adımı ve dış yazı tipi yok)
 test/                   birim ve entegrasyon testleri
 ```
 
@@ -122,6 +149,8 @@ Yeni bir arama motoru ya da dil modeli eklemek için `src/core/providers.ts` iç
 
 - Kaynak katmanı alan adına göre belirleniyor; listeler öznel ve eksik olabilir.
 - Kopya tespiti yalnızca arama özetlerine bakıyor, sayfanın tamamına değil.
+- Taranmış (görüntü) PDF'lerde metin okunamaz; OCR yok.
+- DOI'nin kayıtlı olması yayının var olduğunu gösterir, iddia edilen şeyi söylediğini değil.
 - Sonuçlar bir karar değil, bir başlangıç noktası. Arayüz her kaynağı bağlantısıyla gösteriyor; asıl amaç kullanıcının kendisinin bakmasını kolaylaştırmak.
 
 ## Arka plan okumaları
@@ -133,4 +162,4 @@ Yeni bir arama motoru ya da dil modeli eklemek için `src/core/providers.ts` iç
 
 ## Lisans
 
-MIT. Yazı tipleri (Bricolage Grotesque, Newsreader) SIL Open Font License ile `public/fonts` içinde.
+MIT.

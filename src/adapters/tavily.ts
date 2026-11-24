@@ -1,4 +1,4 @@
-import type { SearchHit, WebSearchProvider } from '../core/providers.js';
+import type { ExtractedPage, PageExtractor, SearchHit, WebSearchProvider } from '../core/providers.js';
 import { fetchWithRetry, ProviderError, type RetryOptions } from './http.js';
 
 export interface TavilyOptions extends RetryOptions {
@@ -47,5 +47,39 @@ export class TavilySearchProvider implements WebSearchProvider {
         snippet: item.content ?? '',
         publishedDate: item.published_date,
       }));
+  }
+}
+
+/** Tavily Extract: bağlantının okunabilir metnini çeker. Sayfayı biz indirmediğimiz için sunucu SSRF riskine açılmaz. */
+export class TavilyExtractor implements PageExtractor {
+  constructor(
+    private readonly apiKey: string,
+    private readonly options: RetryOptions = {}
+  ) {
+    if (!apiKey) throw new ProviderError('Tavily', 'API anahtarı eksik');
+  }
+
+  async extract(url: string): Promise<ExtractedPage> {
+    const response = await fetchWithRetry(
+      'Tavily Extract',
+      'https://api.tavily.com/extract',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
+        body: JSON.stringify({ urls: [url], extract_depth: 'basic', format: 'text' }),
+      },
+      { timeoutMs: 30_000, ...this.options }
+    );
+    const data = (await response.json()) as {
+      results?: Array<{ url?: string; title?: string; raw_content?: string }>;
+      failed_results?: Array<{ url?: string; error?: string } | string>;
+    };
+    const page = data.results?.[0];
+    if (!page?.raw_content?.trim()) {
+      const failure = data.failed_results?.[0];
+      const reason = typeof failure === 'string' ? '' : failure?.error;
+      throw new ProviderError('Tavily Extract', `Sayfa içeriği alınamadı${reason ? `: ${reason}` : ''}`);
+    }
+    return { url: page.url ?? url, title: page.title, text: page.raw_content };
   }
 }

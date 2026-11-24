@@ -11,7 +11,7 @@ export function fallbackSplitClaims(rawInput: string, maxClaims = 3): string[] {
   const sentences = rawInput
     .split(/(?<=[.!?])\s+|\n+/u)
     .map((s) => s.replace(/^[\s!?.]+|[\s!]+$/gu, '').trim())
-    .filter((s) => s.split(/\s+/).length >= 3 && !s.endsWith('?'));
+    .filter((s) => s.split(/\s+/).filter((w) => /\p{L}{2,}/u.test(w)).length >= 3 && !s.endsWith('?'));
   const unique = Array.from(new Set(sentences));
   return (unique.length > 0 ? unique : [rawInput.trim()]).slice(0, maxClaims);
 }

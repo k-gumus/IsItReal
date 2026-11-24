@@ -34,3 +34,14 @@ export interface FactCheckProvider {
     reviewDate?: string;
   }>>;
 }
+
+export interface ExtractedPage {
+  url: string;
+  title?: string;
+  text: string;
+}
+
+/** Bir web sayfasının okunabilir metnini çıkarır (canlı modda Tavily Extract). */
+export interface PageExtractor {
+  extract(url: string): Promise<ExtractedPage>;
+}

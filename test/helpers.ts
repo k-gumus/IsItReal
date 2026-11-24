@@ -1,3 +1,4 @@
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 import type { LLMCallOptions, LLMTask, SearchHit, StructuredLLMProvider, WebSearchProvider } from '../src/core/providers.js';
 import type { EvidenceNode, SourceTier, TraceResult } from '../src/core/types.js';
 
@@ -56,4 +57,13 @@ export function trace(nodes: EvidenceNode[], overrides: Partial<TraceResult> = {
     warnings: [],
     ...overrides,
   };
+}
+
+export async function makePdf(lines: string[]): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Demo Makale');
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage();
+  lines.forEach((line, i) => page.drawText(line, { x: 40, y: 760 - i * 16, size: 10, font }));
+  return doc.save();
 }

@@ -4,7 +4,9 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { DemoLLMProvider, DemoSearchProvider } from '../src/adapters/demo.js';
+import { DemoLLMProvider, DemoPageExtractor, DemoSearchProvider } from '../src/adapters/demo.js';
+import { DemoDoiResolver } from '../src/adapters/doi.js';
+import { makePdf } from './helpers.js';
 import { createServer } from '../src/server/server.js';
 import { RateLimiter, TtlCache } from '../src/server/limits.js';
 
@@ -15,9 +17,9 @@ before(async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'isitreal-'));
   await writeFile(path.join(dir, 'index.html'), '<!doctype html><title>t</title>');
   const server = createServer({
-    deps: { mode: 'demo', searchProvider: new DemoSearchProvider(0), llm: new DemoLLMProvider(0), tracerConfig: { maxDepth: 2 } },
+    deps: { mode: 'demo', searchProvider: new DemoSearchProvider(0), llm: new DemoLLMProvider(0), pageExtractor: new DemoPageExtractor(0), doiResolver: new DemoDoiResolver(), tracerConfig: { maxDepth: 2 } },
     publicDir: dir,
-    rateLimitPerMinute: 6,
+    rateLimitPerMinute: 14,
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -73,9 +75,39 @@ describe('HTTP sunucusu', () => {
     assert.equal(report.overallVerdict, 'CONTRADICTED');
   });
 
+  it('kısa olsa da DOI girdisini kabul eder', async () => {
+    const r = await (await post('/api/verify', { text: '10.5555/demo.2024.001' })).json();
+    assert.equal(r.source.kind, 'doi');
+    assert.equal(r.citations[0].status, 'found');
+  });
+
+  it('PDF yükler, metnini çıkarır ve pdfId ile doğrular', async () => {
+    const pdf = await makePdf(['Abstract. Ekim ayinda yillik enflasyon yuzde 31,2 olarak aciklandi.', 'doi:10.5555/demo.2019.042']);
+    const up = await fetch(`${base}/api/pdf`, { method: 'POST', headers: { 'Content-Type': 'application/pdf', 'X-Filename': encodeURIComponent('çalışma.pdf') }, body: pdf });
+    assert.equal(up.status, 200);
+    const meta = await up.json();
+    assert.equal(meta.name, 'çalışma.pdf');
+    assert.equal(meta.dois, 1);
+    const r = await (await post('/api/verify', { pdfId: meta.id })).json();
+    assert.equal(r.source.kind, 'pdf');
+    assert.equal(r.citationSummary.retracted, 1);
+  });
+
+  it('PDF olmayan dosyayı ve bilinmeyen pdfId\'yi reddeder', async () => {
+    const bad = await fetch(`${base}/api/pdf`, { method: 'POST', headers: { 'Content-Type': 'application/pdf' }, body: 'merhaba' });
+    assert.equal(bad.status, 400);
+    assert.match((await bad.json()).error, /PDF değil/);
+    assert.equal((await post('/api/verify', { pdfId: 'yok' })).status, 400);
+  });
+
+  it('kaynak katmanı listesini döndürür', async () => {
+    const tiers = await (await fetch(`${base}/api/tiers`)).json();
+    assert.ok(tiers.TIER_1_TERMINAL_PROOF.domains.includes('tuik.gov.tr'));
+  });
+
   it('hız sınırını aşınca 429 ve Retry-After döner', async () => {
     let last: Response | undefined;
-    for (let i = 0; i < 8; i++) last = await post('/api/verify', { text: 'kısa' });
+    for (let i = 0; i < 16; i++) last = await post('/api/verify', { text: 'kısa' });
     assert.equal(last?.status, 429);
     assert.ok(Number(last?.headers.get('retry-after')) > 0);
   });

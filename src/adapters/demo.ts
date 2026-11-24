@@ -1,4 +1,4 @@
-import type { LLMCallOptions, SearchHit, StructuredLLMProvider, WebSearchProvider } from '../core/providers.js';
+import type { ExtractedPage, LLMCallOptions, PageExtractor, SearchHit, StructuredLLMProvider, WebSearchProvider } from '../core/providers.js';
 import { fallbackSplitClaims } from '../core/nli-judge.js';
 
 /**
@@ -130,6 +130,19 @@ export class DemoLLMProvider implements StructuredLLMProvider {
       lateralReadingTips: refutes
         ? ['Afet ve acil durum kurumlarının resmi hesaplarını takip et.', 'Tarih ve büyüklük veren deprem "tahminleri"ne karşı temkinli ol.']
         : ['Bültenin yayın tarihini ve kapsadığı dönemi kontrol et.', 'Yıllık ve aylık oranları karıştırmadığından emin ol.'],
+    };
+  }
+}
+
+/** Demo: her bağlantı için aynı kurgusal haber metnini döndürür. */
+export class DemoPageExtractor implements PageExtractor {
+  constructor(private readonly latencyMs = 350) {}
+  async extract(url: string): Promise<ExtractedPage> {
+    await wait(this.latencyMs);
+    return {
+      url,
+      title: 'Elektronik cihazlara yüzde 50 ek vergi kesinleşti (demo sayfa)',
+      text: 'SON DAKİKA! Uzmanlar uyardı: yeni düzenlemeyle tüm elektronik cihazlara yüzde 50 ek vergi getirilmesi kesinleşti. Telefon ve bilgisayar fiyatları uçacak, silinmeden okuyun ve herkese paylaşın.',
     };
   }
 }

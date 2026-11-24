@@ -179,3 +179,18 @@ export function tierRank(tier: SourceTier): number {
       return 4;
   }
 }
+
+/** Arayüzdeki "Kaynak katmanları" sekmesi için listelerin özeti */
+export function tierReference() {
+  return {
+    TIER_1_TERMINAL_PROOF: {
+      suffixes: TERMINAL_DOMAIN_SUFFIXES,
+      domains: TERMINAL_DOMAINS,
+      sections: FACT_CHECK_SECTIONS.map((s) => s.domain + ' (teyit bölümü)'),
+      academicWithDoi: ACADEMIC_PUBLISHERS,
+    },
+    TIER_2_WIRE_JOURNALISM: { domains: WIRE_AND_ESTABLISHED_MEDIA },
+    TIER_3_SECONDARY_AGGREGATOR: { domains: [] as string[] },
+    TIER_4_SOCIAL_UNVERIFIED: { domains: SOCIAL_DOMAINS },
+  };
+}
